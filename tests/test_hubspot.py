@@ -7,6 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 
@@ -171,7 +172,11 @@ def test_hubspot_archived_refusal_follows_authentication_and_cursor_validation(
     r = client.get(url, headers=h, params={"archived": "true", "after": "abc"})
     control = client.get(url, headers=h, params={"after": "abc"})
     assert r.status_code == control.status_code == (400 if h else 401)
-    assert r.json() == control.json()
+    # A 401 mints a new correlationId on each answer; the refusal itself is the same.
+    left, right = r.json(), control.json()
+    left.pop("correlationId", None)
+    right.pop("correlationId", None)
+    assert left == right
 
 
 def test_hubspot_list_cursor_pages_without_overlap(client, admin_h):
@@ -538,8 +543,33 @@ _MISSING_RECORD_PAGE = (
 )
 
 
+_UNAUTHENTICATED = (
+    "Authentication credentials not found. "
+    "This API supports OAuth 2.0 authentication and you can find more details "
+    "at https://developers.hubspot.com/docs/methods/auth/oauth-overview"
+)
+
+
+def _unauthenticated_body(response):
+    body = response.json()
+    uuid.UUID(body.pop("correlationId"))
+    return body
+
+
 def test_hubspot_unauth_is_401(client):
-    assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
+    """A served read with no credential is the 401 ``_unauthenticated`` records, and each answer
+    carries its own id."""
+    first = client.get("/hubspot/crm/v3/objects/companies")
+    second = client.get("/hubspot/crm/v3/objects/companies")
+    assert first.status_code == 401 and second.status_code == 401
+    expected = {
+        "status": "error",
+        "message": _UNAUTHENTICATED,
+        "category": "INVALID_AUTHENTICATION",
+    }
+    assert _unauthenticated_body(first) == expected
+    assert _unauthenticated_body(second) == expected
+    assert first.json()["correlationId"] != second.json()["correlationId"]
 
 
 @pytest.mark.parametrize("authorization", [None, "Bearer nope"])
@@ -566,9 +596,9 @@ def test_hubspot_refuses_an_unserved_operation_for_its_credential(
     headers = {"Authorization": authorization} if authorization else {}
     r = client.request(method, path, headers=headers, json={})
     assert r.status_code == 401
-    assert r.json() == {
+    assert _unauthenticated_body(r) == {
         "status": "error",
-        "message": "Authentication credentials not found.",
+        "message": _UNAUTHENTICATED,
         "category": "INVALID_AUTHENTICATION",
     }
 

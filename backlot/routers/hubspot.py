@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from functools import lru_cache
 
 from fastapi import APIRouter, Request
@@ -138,6 +139,29 @@ _B_BATCH = {
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+# The 401 for a missing or unresolved credential. Measured against api.hubapi.com on 2026-09-28:
+# no Authorization, and `Bearer nope`, answered this message on the served listing and on the
+# writes this server does not run. `correlationId` differed on each response.
+_HUBSPOT_AUTH_NOT_FOUND = (
+    "Authentication credentials not found. "
+    "This API supports OAuth 2.0 authentication and you can find more details "
+    "at https://developers.hubspot.com/docs/methods/auth/oauth-overview"
+)
+
+
+def _unauthenticated() -> JSONResponse:
+    """That 401, with a new ``correlationId`` on each answer."""
+    return JSONResponse(
+        status_code=401,
+        content={
+            "status": "error",
+            "message": _HUBSPOT_AUTH_NOT_FOUND,
+            "correlationId": str(uuid.uuid4()),
+            "category": "INVALID_AUTHENTICATION",
+        },
+    )
 
 
 def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSONResponse:
@@ -1216,7 +1240,7 @@ def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     if not published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
         return None
     if _caller(request) is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     record = _RECORD_PATH.fullmatch(path)
     if record and request.method in ("PATCH", "DELETE"):
         object_type = record[1]
@@ -1238,7 +1262,7 @@ def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
 async def list_objects(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     spellings = _resolve_type(request, object_type)
     if spellings is None:
         return _unknown_type(object_type)
@@ -1273,7 +1297,7 @@ async def list_objects(object_type: str, request: Request):
 async def get_object(object_type: str, record_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     # The type is resolved ahead of the record: on api.hubapi.com, `/crm/v3/objects/nosuch/{id}`
     # answered `Unable to infer object type from: nosuch` for a contact's id (2026-09-30) and for a
     # non-numeric and a negative one (2026-10-12).
@@ -1301,7 +1325,7 @@ async def get_object(object_type: str, record_id: str, request: Request):
 async def search_objects(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     spellings = _resolve_type(request, object_type)
     if spellings is None:
         return _unknown_type(object_type)
@@ -1367,7 +1391,7 @@ async def search_objects(object_type: str, request: Request):
 async def batch_read(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     spellings = _resolve_type(request, object_type)
     if spellings is None:
         return _unknown_type(object_type)
@@ -1427,7 +1451,7 @@ async def list_associations(
 ):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     # In the order real answers them (api.hubapi.com, 2026-09-30 for the types and the empty page,
     # 2026-10-12 and 2026-10-14 for the rest): a type real cannot infer is its 400 on either side of
     # the path, the source's when both are; a record id it won't look up is the 404 `_record_id`
