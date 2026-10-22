@@ -286,8 +286,8 @@ def basic_names_a_user(request: Request) -> bool:
 
 def slack_bearer_token(request: Request) -> str | None:
     """Parse the ``Authorization`` header the way Slack does, which is stricter than
-    :func:`bearer_token`: the scheme must be exactly ``Bearer``, separated from the token by one or
-    more SPACES.
+    :func:`bearer_token`: the scheme must be exactly ``Bearer``, and exactly one space separates it
+    from the token. A further space stays in the token.
 
     Measured against slack.com (a bogus token is enough — the presented/absent split needs no
     account). ``invalid_auth`` means the header counted as a credential, ``not_authed`` means it
@@ -298,6 +298,13 @@ def slack_bearer_token(request: Request) -> str | None:
         ' Bearer <t>'   invalid_auth      token <t>       not_authed
         Bearer <t>' '   invalid_auth      Bearer<TAB><t>  not_authed
                                           Bearer<t>       not_authed
+
+    A token that resolves is read the same way, measured on slack.com/api on 2026-10-20. ``Bearer
+    <t>`` is that caller. ``Bearer  <t>`` and ``Bearer   <t>`` are ``invalid_auth``, because the
+    spaces after the first stay in the token: two spaces on ``auth.test``, ``api.test``,
+    ``conversations.list`` and ``users.list``, and three on ``auth.test``. Spaces around the header
+    value are not part of it, so `` Bearer <t>`` and ``Bearer <t> `` are that caller, on
+    ``auth.test``, ``api.test`` and ``conversations.list``.
 
     A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
     wrong here, and so is its case-insensitive scheme match. That function stays permissive because
@@ -310,7 +317,7 @@ def slack_bearer_token(request: Request) -> str | None:
     hdr = (_authorization(request) or "").strip()
     if not hdr.startswith("Bearer "):
         return None
-    return hdr[len("Bearer ") :].strip() or None
+    return hdr[len("Bearer ") :] or None
 
 
 def msgraph_token(request: Request) -> tuple[str, str | None]:

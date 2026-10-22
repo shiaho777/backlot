@@ -241,8 +241,8 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
         # GitHub's legacy `token <t>` header is not a Slack scheme at all, in either casing.
         ({"headers": {"Authorization": "token xoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Token xoxb-not-a-real-token"}}, "not_authed"),
-        # A tab does not separate scheme from token, but repeated spaces do, and either end of the
-        # header value may carry slack.
+        # A tab does not separate scheme from token. A further space still presents a credential,
+        # and a space at either end of the header value is not part of it.
         ({"headers": {"Authorization": "Bearer\txoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Bearerxoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Bearer  xoxb-not-a-real-token"}}, "invalid_auth"),
@@ -284,6 +284,27 @@ def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens
         headers={"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
     ).json()
     assert ok["ok"] is True
+
+
+def test_slack_a_token_after_more_than_one_space_does_not_resolve(client, tokens_yaml):
+    """A space after the one that separates ``Bearer`` stays in the token.
+
+    As :func:`auth.slack_bearer_token` records. One space, and a space at either end of the header,
+    still name the caller. Two spaces answer ``invalid_auth``, and so do three on ``auth.test``."""
+    token = tokens_yaml["admin_token"]
+    one = f"Bearer {token}"
+    around = (f" Bearer {token}", f"Bearer {token} ")
+    two = f"Bearer  {token}"
+    three = f"Bearer   {token}"
+    for path in ("auth.test", "api.test", "conversations.list"):
+        for value in (one, *around):
+            assert client.get(f"/slack/api/{path}", headers={"Authorization": value}).json()["ok"]
+    assert client.get("/slack/api/users.list", headers={"Authorization": one}).json()["ok"] is True
+    for path in ("auth.test", "api.test", "conversations.list", "users.list"):
+        body = client.get(f"/slack/api/{path}", headers={"Authorization": two}).json()
+        assert body == {"ok": False, "error": "invalid_auth"}
+    body = client.get("/slack/api/auth.test", headers={"Authorization": three}).json()
+    assert body == {"ok": False, "error": "invalid_auth"}
 
 
 def test_slack_auth_error_split_is_uniform_across_methods(client, tokens_yaml):
