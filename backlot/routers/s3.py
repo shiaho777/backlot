@@ -3118,6 +3118,19 @@ _KEY_WRITE_CHECKS = {
 }
 
 
+async def _one_annotation_name(
+    request: Request, bucket: str, key: str, visible: object
+) -> Response | None:
+    """The empty-name refusal of one annotation, after ``_refuse_write`` has found the bucket.
+
+    As ``object_method_refusal`` records for `PUT` and `DELETE` of `?annotation&annotationName=`."""
+    if _first(request.query_params, "annotationName", None) == "":
+        return _error(
+            "UserAnnotationNameMustBeSpecified", "You must specify a user annotation name."
+        )
+    return None
+
+
 async def _refuse_write(
     request: Request,
     bucket: str,
@@ -3335,7 +3348,17 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
     name is read decoded and in its case: `part%4Eumber=1` is refused and `PartNumber=1` is not. A
     `partNumber` beside a valued `uploadId` stays UploadPart, a GET's stays GetObject's part
     (``_part_refusal``), and one beside a selector (`acl`, `tagging`, `website`, `uploads`,
-    `restore`, `torrent`) stays the conflict."""
+    `restore`, `torrent`) stays the conflict.
+
+    A query that names one annotation — `annotation` with an `annotationName` — is that annotation,
+    not the list. `POST` and `PATCH` are 405 `OBJECT_ANNOTATION` with `Allow: DELETE, GET, PUT`,
+    whether or not the bucket exists and whether or not the name is empty. `PUT` and `DELETE` go on
+    to the bucket and the name: a bucket that does not exist is `NoSuchBucket`, and an empty name
+    on one that does is `UserAnnotationNameMustBeSpecified`. Measured 2026-10-15 against
+    s3.amazonaws.com (us-east-1, path-style) at `noaa-ghcn-pds/readme.txt` and a key in a bucket
+    nobody owns, signed with SigV4 and an empty body. There a caller who may not write was answered
+    `EntityTooSmall` for the empty `PUT` and `AccessDenied` for the `DELETE`. This server serves no
+    annotation write, so once those two checks pass a caller gets the 501 its other writes get."""
     method = request.method
     if method == "OPTIONS":
         selected = _key_selected(request.query_params)
@@ -3354,6 +3377,12 @@ async def object_method_refusal(request: Request, bucket: str, key: str) -> Resp
         refused = _sigv4_only_refusal(request)
         if refused is not None:
             return refused
+        if _first(q, "annotationName", None) is not None:
+            if method in ("POST", "PATCH"):
+                return _method_refusal(request, "OBJECT_ANNOTATION", {"Allow": "DELETE, GET, PUT"})
+            return await _refuse_write(
+                request, bucket, method, validate=_one_annotation_name, key=key
+            )
     if selected == ["uploadId"] and "partNumber" in q:
         selected = ["PART"]
     refused = _website_refusal(q)

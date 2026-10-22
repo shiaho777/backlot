@@ -2432,8 +2432,7 @@ def test_an_objects_subresource_refusals_sit_where_real_puts_them(
             "bearer",
             "no-space",
         )
-        # Signed with SigV4, an `annotationName` reaches the annotation's own operation on real,
-        # which this server does not serve.
+        # A signed SigV4 request that names one annotation is the next test.
         if credential != "sigv4" or query == "annotation"
     ],
 )
@@ -2493,6 +2492,56 @@ def test_annotation_writes_require_signature_version_4(
         assert response.status_code == status
         assert fields == expected
     assert response.headers.get("allow") == ("GET" if credential == "sigv4" else None)
+
+
+def test_one_annotation_write_goes_on_to_the_bucket_and_the_name(live_server):
+    """One named annotation is its own resource, as ``object_method_refusal`` records.
+
+    `POST` and `PATCH` are the 405 that names `OBJECT_ANNOTATION`. `PUT` and `DELETE` name a missing
+    bucket, refuse an empty name on one that exists, and otherwise the 501 of a write this server
+    does not serve."""
+    import httpx
+
+    base_url, settings = live_server
+    present = OBJECT_PATH
+    absent = "/s3/no-such-bucket/k.txt"
+
+    def send(method, path, query):
+        url, headers = _sign_get(
+            base_url, f"{path}?{query}", settings.admin_token, method=method, body=b""
+        )
+        response = httpx.request(method, url, headers=headers, content=b"")
+        fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+        fields.pop("RequestId", None)
+        fields.pop("HostId", None)
+        return response, fields
+
+    for method in ("POST", "PATCH"):
+        for path in (present, absent):
+            for query in ("annotation&annotationName=x", "annotation&annotationName="):
+                response, fields = send(method, path, query)
+                assert response.status_code == 405
+                assert fields == {
+                    "Code": "MethodNotAllowed",
+                    "Message": "The specified method is not allowed against this resource.",
+                    "Method": method,
+                    "ResourceType": "OBJECT_ANNOTATION",
+                }
+                assert response.headers.get("allow") == "DELETE, GET, PUT"
+    for method in ("PUT", "DELETE"):
+        for query in ("annotation&annotationName=x", "annotation&annotationName="):
+            response, fields = send(method, absent, query)
+            assert response.status_code == 404
+            assert fields["Code"] == "NoSuchBucket"
+            assert fields["BucketName"] == "no-such-bucket"
+        response, fields = send(method, present, "annotation&annotationName=")
+        assert response.status_code == 400
+        assert fields["Code"] == "UserAnnotationNameMustBeSpecified"
+        assert fields["Message"] == "You must specify a user annotation name."
+        response, fields = send(method, present, "annotation&annotationName=x")
+        assert response.status_code == 501
+        assert fields["Code"] == "NotImplemented"
+        assert fields["Message"] == _WRITTEN + method
 
 
 @pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
